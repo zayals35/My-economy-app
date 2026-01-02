@@ -5,23 +5,15 @@ import plotly.graph_objects as go
 from pypdf import PdfReader
 import re
 
-# --- APP CONFIG & THEME ---
-st.set_page_config(page_title="Pro Habit Tracker", layout="wide", page_icon="💎")
+# --- APP CONFIG ---
+st.set_page_config(page_title="SpareBank Pro Tracker", layout="wide", page_icon="🏦")
 
-# CSS for a professional Dark Mode look
-st.markdown("""
-    <style>
-    .stApp { background-color: #0b0e14; color: #e1e4e8; }
-    .metric-card { background-color: #1c2128; border: 1px solid #444c56; border-radius: 10px; padding: 20px; }
-    </style>
-    """, unsafe_allow_html=True)
-
-# --- CATEGORY BRAIN ---
+# --- CATEGORY ENGINE ---
 def get_category(desc):
     d = str(desc).lower()
     mapping = {
         'Subscriptions': ['apple.com', 'adobe', 'openai', 'chatgpt', 'microsoft', 'spotify', 'muslimi.com'],
-        'Health': ['legesenter', 'apotek', 'helse', 'vitus'],
+        'Health': ['legesenter', 'apotek', 'vitus', 'fokus'],
         'Savings': ['småsparing'],
         'Travel': ['atb', 'vy', 'fly', 'taxi', 'uber', 'feriereiser'],
         'Food & Groceries': ['kiwi', 'rema', 'coop', 'meny', 'mcdonalds', 'food'],
@@ -33,102 +25,92 @@ def get_category(desc):
         if any(k in d for k in keywords): return cat
     return 'Other/Shopping'
 
-# --- SPAREBANK 1 PDF ENGINE ---
+# --- NEW ROBUST PARSER ---
 def parse_pdf(file):
     reader = PdfReader(file)
     data = []
+    
     for page in reader.pages:
         text = page.extract_text()
+        # Look for the pattern: Description text followed by a Norwegian-style number (e.g. 349,00)
+        # We look for lines containing a comma followed by two digits at the end of a block
         lines = text.split('\n')
         for line in lines:
-            # Skip noise like account headers and IBANs
             if any(x in line for x in ["4212.02.65827", "IBAN", "Saldo"]): continue
             
-            # Find Norwegian currency pattern: 1.234,56 or 123,45
+            # Find amounts (digits with dots and commas like 1.529,00 or 349,00)
             amounts = re.findall(r'(\d+[\d\s.]*,\d{2})', line)
             if amounts:
-                # Use the first amount found as the transaction value
-                amt_str = amounts[0].replace(' ', '').replace('.', '').replace(',', '.')
+                # We take the first amount found as the transaction value
+                amt_raw = amounts[0].replace(' ', '').replace('.', '').replace(',', '.')
                 try:
-                    amt = float(amt_str)
-                    if amt > 25000: continue # Skip large balance totals
+                    amt = float(amt_raw)
+                    if amt > 25000: continue # Skip balance totals
                     
-                    # Clean up the description
                     desc = re.sub(r'\d+[\d\s.]*,\d{2}.*', '', line).strip()
-                    if desc:
-                        data.append({
-                            "Description": desc, 
-                            "Amount": amt, 
-                            "Category": get_category(desc)
-                        })
+                    if len(desc) > 3: # Ignore tiny noise strings
+                        data.append({"Description": desc, "Amount": amt, "Category": get_category(desc)})
                 except: continue
     return pd.DataFrame(data)
 
-# --- MAIN DASHBOARD ---
-st.title("💎 Personal Economy Pro")
+# --- DASHBOARD UI ---
+st.title("🏦 SpareBank 1 Habit Pro")
+st.markdown("Interactive analysis of your December spending and savings.")
 
 with st.sidebar:
-    st.header("🎯 Set Your Goals")
-    goal_food = st.slider("Food Budget (NOK)", 0, 10000, 4000)
-    goal_subs = st.slider("Subs Budget (NOK)", 0, 5000, 1500)
-    goal_charity = st.slider("Charity Budget (NOK)", 0, 5000, 500)
-    uploaded_files = st.file_uploader("Upload Statements", type=['pdf'], accept_multiple_files=True)
+    st.header("⚙️ App Settings")
+    files = st.file_uploader("Upload SpareBank 1 PDF", type=['pdf'], accept_multiple_files=True)
+    st.divider()
+    g_food = st.slider("Food Goal", 0, 10000, 4000)
+    g_subs = st.slider("Subs Goal", 0, 5000, 1500)
+    g_charity = st.slider("Charity Goal", 0, 2000, 500)
 
-if uploaded_files:
-    # Build the database from uploaded PDFs
-    all_data = []
-    for f in uploaded_files:
-        pdf_df = parse_pdf(f)
-        if not pdf_df.empty:
-            all_data.append(pdf_df)
+if files:
+    all_df = []
+    for f in files:
+        res = parse_pdf(f)
+        if not res.empty:
+            all_df.append(res)
     
-    if all_data:
-        df = pd.concat(all_data).drop_duplicates()
+    if all_df:
+        df = pd.concat(all_df).drop_duplicates()
         
-        # 1. Top Metrics with Health Score
-        spending_df = df[~df['Category'].isin(['Income', 'Savings'])]
-        total_spent = spending_df['Amount'].sum()
-        total_saved = df[df['Category'] == 'Savings']['Amount'].sum()
-        
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Total Monthly Spending", f"{total_spent:,.2f} NOK")
-        m2.metric("Micro-Savings Habit", f"{total_saved:,.2f} NOK", delta="Great pace!", delta_color="normal")
-        
-        # Calculate Burn Rate Gauge
-        sub_spent = df[df['Category'] == 'Subscriptions']['Amount'].sum()
-        fig_gauge = go.Figure(go.Indicator(
-            mode = "gauge+number",
-            value = sub_spent,
-            title = {'text': "Monthly Subscription Burn"},
-            gauge = {'axis': {'range': [0, 3000]}, 'bar': {'color': "#00d4ff"}}
-        ))
-        fig_gauge.update_layout(height=250, margin=dict(l=20, r=20, t=50, b=20), paper_bgcolor="rgba(0,0,0,0)")
-        m3.plotly_chart(fig_gauge, use_container_width=True)
+        # Split data for better insights
+        spending = df[~df['Category'].isin(['Income', 'Savings'])]
+        savings = df[df['Category'] == 'Savings']
+        charity = df[df['Category'] == 'Charity/Support']
 
-        # 2. Animated Sunburst Chart
+        # 1. Animated Metrics
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total Spending", f"{spending['Amount'].sum():,.2f} NOK")
+        c2.metric("Total Savings", f"{savings['Amount'].sum():,.2f} NOK", delta="On Track")
+        c3.metric("Charity Contributions", f"{charity['Amount'].sum():,.2f} NOK")
+
+        # 2. Interactive Sunburst (Habit Breakdown)
         st.divider()
-        c1, c2 = st.columns(2)
-        with c1:
+        col_left, col_right = st.columns(2)
+        
+        with col_left:
             st.subheader("Interactive Spending Story")
-            fig_sun = px.sunburst(spending_df, path=['Category', 'Description'], values='Amount',
-                                 color='Category', color_discrete_sequence=px.colors.qualitative.Prism)
-            st.plotly_chart(fig_sun, use_container_width=True)
-            st.caption("Click a category to zoom in on specific habits.")
+            fig = px.sunburst(spending, path=['Category', 'Description'], values='Amount',
+                             color='Category', template="plotly_dark")
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption("Click a category to see specific vendors like Apple or OpenAI.")
 
-        with c2:
-            st.subheader("Budget Performance")
-            cat_sums = df.groupby('Category')['Amount'].sum()
+        with col_right:
+            st.subheader("Habit Scorecard")
+            cat_totals = df.groupby('Category')['Amount'].sum()
             
-            # Progress Bars for Habits
-            habits = [("Food & Groceries", goal_food), ("Subscriptions", goal_subs), ("Charity/Support", goal_charity)]
-            for name, goal in habits:
-                spent = cat_sums.get(name, 0)
-                st.write(f"**{name}**: {spent:,.0f} / {goal:,.0f} NOK")
+            # Budget Progress
+            for name, goal in [("Food & Groceries", g_food), ("Subscriptions", g_subs), ("Charity/Support", g_charity)]:
+                spent = cat_totals.get(name, 0)
+                st.write(f"**{name}**")
                 st.progress(min(spent/goal, 1.0) if goal > 0 else 0)
+                st.caption(f"{spent:,.0f} / {goal:,.0f} NOK")
 
-        st.subheader("📝 Transaction Explorer")
+        st.subheader("Transaction Explorer")
         st.dataframe(df.sort_values(by="Amount", ascending=False), use_container_width=True)
     else:
-        st.error("Could not find transactions. Please ensure the PDF is a standard SpareBank 1 statement.")
+        st.error("Error: Could not extract data. Your PDF might be a 'scanned image' instead of a digital text PDF.")
 else:
-    st.info("Upload your PDF to unlock your animated financial story.")
+    st.info("Upload your SpareBank 1 statement to begin.")
