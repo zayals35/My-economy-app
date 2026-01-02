@@ -8,14 +8,14 @@ import re
 # --- APP CONFIG ---
 st.set_page_config(page_title="SpareBank Pro Tracker", layout="wide", page_icon="🏦")
 
-# --- CATEGORY ENGINE ---
+# --- CATEGORY BRAIN ---
 def get_category(desc):
     d = str(desc).lower()
     mapping = {
         'Subscriptions': ['apple.com', 'adobe', 'openai', 'chatgpt', 'microsoft', 'spotify', 'muslimi.com'],
         'Health': ['legesenter', 'apotek', 'vitus', 'fokus'],
         'Savings': ['småsparing'],
-        'Travel': ['atb', 'vy', 'fly', 'taxi', 'uber', 'feriereiser'],
+        'Travel': ['atb app', 'feriereiser', 'uber', 'taxi'],
         'Food & Groceries': ['kiwi', 'rema', 'coop', 'meny', 'mcdonalds', 'food'],
         'Charity/Support': ['yousuf', 'launchgood', 'dawah', 'relief'],
         'Transfers/Vipps': ['vipps', 'overføring', 'til:', 'betalt:'],
@@ -25,30 +25,32 @@ def get_category(desc):
         if any(k in d for k in keywords): return cat
     return 'Other/Shopping'
 
-# --- NEW ROBUST PARSER ---
+# --- THE ROBUST SPAREBANK 1 PARSER ---
 def parse_pdf(file):
     reader = PdfReader(file)
     data = []
     
     for page in reader.pages:
         text = page.extract_text()
-        # Look for the pattern: Description text followed by a Norwegian-style number (e.g. 349,00)
-        # We look for lines containing a comma followed by two digits at the end of a block
+        if not text: continue # Skip if page is empty/unreadable
+        
         lines = text.split('\n')
         for line in lines:
+            # Skip noise lines [cite: 13, 14, 20]
             if any(x in line for x in ["4212.02.65827", "IBAN", "Saldo"]): continue
             
-            # Find amounts (digits with dots and commas like 1.529,00 or 349,00)
+            # Find Norwegian currency pattern (e.g., 349,00 or 1.529,00) 
             amounts = re.findall(r'(\d+[\d\s.]*,\d{2})', line)
             if amounts:
-                # We take the first amount found as the transaction value
+                # Logic: In SpareBank PDFs, 'Ut av konto' is often the first amount 
                 amt_raw = amounts[0].replace(' ', '').replace('.', '').replace(',', '.')
                 try:
                     amt = float(amt_raw)
-                    if amt > 25000: continue # Skip balance totals
+                    if amt > 20000: continue # Skip balance totals 
                     
+                    # Clean up the description 
                     desc = re.sub(r'\d+[\d\s.]*,\d{2}.*', '', line).strip()
-                    if len(desc) > 3: # Ignore tiny noise strings
+                    if len(desc) > 3:
                         data.append({"Description": desc, "Amount": amt, "Category": get_category(desc)})
                 except: continue
     return pd.DataFrame(data)
@@ -75,7 +77,7 @@ if files:
     if all_df:
         df = pd.concat(all_df).drop_duplicates()
         
-        # Split data for better insights
+        # Split data for better insights 
         spending = df[~df['Category'].isin(['Income', 'Savings'])]
         savings = df[df['Category'] == 'Savings']
         charity = df[df['Category'] == 'Charity/Support']
@@ -86,22 +88,20 @@ if files:
         c2.metric("Total Savings", f"{savings['Amount'].sum():,.2f} NOK", delta="On Track")
         c3.metric("Charity Contributions", f"{charity['Amount'].sum():,.2f} NOK")
 
-        # 2. Interactive Sunburst (Habit Breakdown)
+        # 2. Interactive Sunburst (Animated Habits)
         st.divider()
         col_left, col_right = st.columns(2)
         
         with col_left:
             st.subheader("Interactive Spending Story")
+            # This creates the animated "drill-down" effect 
             fig = px.sunburst(spending, path=['Category', 'Description'], values='Amount',
                              color='Category', template="plotly_dark")
             st.plotly_chart(fig, use_container_width=True)
-            st.caption("Click a category to see specific vendors like Apple or OpenAI.")
 
         with col_right:
             st.subheader("Habit Scorecard")
             cat_totals = df.groupby('Category')['Amount'].sum()
-            
-            # Budget Progress
             for name, goal in [("Food & Groceries", g_food), ("Subscriptions", g_subs), ("Charity/Support", g_charity)]:
                 spent = cat_totals.get(name, 0)
                 st.write(f"**{name}**")
@@ -111,6 +111,6 @@ if files:
         st.subheader("Transaction Explorer")
         st.dataframe(df.sort_values(by="Amount", ascending=False), use_container_width=True)
     else:
-        st.error("Error: Could not extract data. Your PDF might be a 'scanned image' instead of a digital text PDF.")
+        st.error("Still no data found. Please try converting your PDF to a CSV file in your bank portal.")
 else:
     st.info("Upload your SpareBank 1 statement to begin.")
