@@ -8,18 +8,9 @@ from datetime import datetime
 # --- APP CONFIG ---
 st.set_page_config(page_title="Economy Info Hub", layout="wide", page_icon="📊")
 
-# Custom CSS for a clean, professional "Hub" look
-st.markdown("""
-    <style>
-    .stApp { background-color: #f8f9fa; color: #1e1e1e; }
-    .metric-container { background-color: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-    </style>
-    """, unsafe_allow_html=True)
-
-# --- SMART CATEGORIZATION ---
+# --- CATEGORY PATTERNS (Recognizing your specific expenses) ---
 def get_category(desc):
     d = str(desc).lower()
-    # Patterns directly from your SpareBank statement
     mapping = {
         'Subscriptions': ['apple.com', 'adobe', 'openai', 'chatgpt', 'microsoft', 'spotify', 'muslimi.com'],
         'Health': ['legesenter', 'apotek', 'vitus', 'fokus', 'lege'],
@@ -34,60 +25,57 @@ def get_category(desc):
         if any(k in d for k in keywords): return cat
     return 'General Shopping'
 
-# --- SPAREBANK 1 PDF PARSER ---
+# --- ROBUST SPAREBANK TABLE PARSER ---
 def parse_pdf(file):
     reader = PdfReader(file)
     data = []
     
     for page in reader.pages:
         text = page.extract_text()
+        # SpareBank 1 specific: Data often follows a date like 0112 or 1512
+        # This regex looks for: Date + Description + Amount (e.g., 1.529,00)
         lines = text.split('\n')
-        
         for line in lines:
-            # Skip noise like IBAN, account headers, or empty lines
-            if any(x in line for x in ["4212.02.65827", "IBAN", "Saldo", "Referanse", "Side"]): continue
+            # Skip non-transaction lines
+            if any(x in line for x in ["4212.02.65827", "IBAN", "Saldo", "Side"]): continue
             
-            # Pattern: Description followed by Norwegian amount format (e.g., 349,00)
-            match = re.search(r'(.*?)\s+(\d+[\d\s.]*,\d{2})', line)
+            # Find the Norwegian currency pattern (e.g., 349,00)
+            amounts = re.findall(r'(\d+[\d\s.]*,\d{2})', line)
+            # Find the date pattern (e.g., 0112)
+            dates = re.findall(r'(\d{4})', line)
             
-            # Pattern: Also look for dates in DDMM format (e.g. 0112)
-            date_match = re.search(r'(\d{4})', line)
-            
-            if match:
-                desc_raw = match.group(1).strip()
-                amt_raw = match.group(2).replace(' ', '').replace('.', '').replace(',', '.')
-                date_str = date_match.group(1) if date_match else "0101" # Default to Jan 1st if missing
-                
+            if amounts and dates:
+                # 'Ut av konto' is the first amount on the line in your PDF
+                amt_raw = amounts[0].replace(' ', '').replace('.', '').replace(',', '.')
                 try:
                     amt = float(amt_raw)
-                    # Filter out system IDs and balance totals (usually > 20k or < 1)
-                    if 1.0 <= amt < 20000.0:
-                        # Attempt to format date into a readable Month
-                        month_int = int(date_str[2:4])
-                        month_name = datetime(2025, month_int, 1).strftime('%B')
+                    if 1.0 <= amt < 25000.0: # Filter noise/account numbers
+                        desc = re.sub(r'\d+[\d\s.]*,\d{2}.*', '', line).strip()
+                        desc = re.sub(r'^\d{4}\s+', '', desc) # Remove date prefix
+                        
+                        month_idx = int(dates[0][2:4])
+                        month_name = datetime(2025, month_idx, 1).strftime('%B')
                         
                         data.append({
                             "Month": month_name,
-                            "Date_Code": date_str,
-                            "Description": re.sub(r'^\d{4}\s+', '', desc_raw), # Clean date prefix
+                            "Date": dates[0],
+                            "Description": desc,
                             "Amount": amt,
-                            "Category": get_category(desc_raw)
+                            "Category": get_category(desc)
                         })
                 except: continue
     return pd.DataFrame(data)
 
-# --- MAIN UI ---
-st.title("📂 Economy Information Hub")
-st.markdown("Upload multiple monthly statements to build your financial archive.")
+# --- MAIN INTERFACE ---
+st.title("📂 Financial Information Hub")
 
-# 1. BROWSE & SUBMIT (Sidebar)
+# 1. BROWSE & SUBMIT
 with st.sidebar:
-    st.header("📤 Document Upload")
-    uploaded_files = st.file_uploader("Upload SpareBank 1 PDFs", type=['pdf'], accept_multiple_files=True)
-    st.info("Upload files for different months (e.g., Nov, Dec) to see the full timeline.")
+    st.header("📤 Upload Center")
+    uploaded_files = st.file_uploader("Browse SpareBank PDFs", type=['pdf'], accept_multiple_files=True)
+    st.info("You can upload multiple months at once.")
 
 if uploaded_files:
-    # Build Master Data
     all_data = []
     for f in uploaded_files:
         df_temp = parse_pdf(f)
@@ -98,49 +86,43 @@ if uploaded_files:
         master_df = pd.concat(all_data).drop_duplicates()
         
         # 2. MONTHLY CALENDAR SELECTOR
-        available_months = master_df['Month'].unique()
-        selected_month = st.selectbox("📅 Select Month to View", options=available_months)
+        available_months = sorted(master_df['Month'].unique(), key=lambda x: datetime.strptime(x, '%B'))
+        selected_month = st.selectbox("📅 Select Month to Analyze", options=available_months)
         
-        # Filter data based on selected month
+        # Filter for selected month
         month_df = master_df[master_df['Month'] == selected_month]
         spending_df = month_df[~month_df['Category'].isin(['Income', 'Savings'])]
 
-        # 3. DATA TO GRAPHICS
+        # 3. DATA INTO GRAPHICS
         st.divider()
         col1, col2, col3 = st.columns(3)
-        col1.metric("Total Spent", f"{spending_df['Amount'].sum():,.2f} NOK")
-        col2.metric("Total Saved", f"{month_df[month_df['Category'] == 'Savings']['Amount'].sum():,.2f} NOK")
+        col1.metric("Total Spending", f"{spending_df['Amount'].sum():,.2f} NOK")
+        col2.metric("Total Savings", f"{month_df[month_df['Category'] == 'Savings']['Amount'].sum():,.2f} NOK")
         col3.metric("Charity Given", f"{month_df[month_df['Category'] == 'Charity/Donations']['Amount'].sum():,.2f} NOK")
 
-        c_left, c_right = st.columns(2)
-        
-        with c_left:
-            st.subheader(f"Spending Breakdown: {selected_month}")
-            fig_pie = px.pie(spending_df, values='Amount', names='Category', hole=0.4,
-                             color_discrete_sequence=px.colors.qualitative.Safe)
+        left, right = st.columns(2)
+        with left:
+            st.subheader("Spending by Category")
+            fig_pie = px.pie(spending_df, values='Amount', names='Category', hole=0.4)
             st.plotly_chart(fig_pie, use_container_width=True)
-
-        with c_right:
-            st.subheader("Daily Spending Trend")
-            daily_trend = spending_df.groupby('Date_Code')['Amount'].sum().reset_index()
-            fig_bar = px.bar(daily_trend, x='Date_Code', y='Amount', 
-                             labels={'Date_Code': 'Day (DDMM)', 'Amount': 'NOK'},
-                             color_discrete_sequence=['#00d4ff'])
+        
+        with right:
+            st.subheader("Daily Spending Spikes")
+            daily = spending_df.groupby('Date')['Amount'].sum().reset_index()
+            fig_bar = px.bar(daily, x='Date', y='Amount', labels={'Date': 'Day (DDMM)'})
             st.plotly_chart(fig_bar, use_container_width=True)
 
-        # 4. SEARCHABLE INFO HUB
-        st.subheader("📝 Transaction Details")
-        search_query = st.text_input("Search description (e.g., 'Apple', 'Vipps', 'Ticket')...")
-        
-        if search_query:
-            display_df = month_df[month_df['Description'].str.contains(search_query, case=False)]
+        # 4. INFO HUB SEARCH
+        st.subheader("🔎 Transaction Search")
+        query = st.text_input("Search for a keyword (e.g. 'Apple', 'Vipps', 'Lønn')...")
+        if query:
+            display_df = month_df[month_df['Description'].str.contains(query, case=False)]
         else:
             display_df = month_df
             
-        st.dataframe(display_df[['Date_Code', 'Description', 'Amount', 'Category']].sort_values('Date_Code'), 
-                     use_container_width=True)
+        st.dataframe(display_df[['Date', 'Description', 'Amount', 'Category']].sort_values('Date'), use_container_width=True)
 
     else:
-        st.error("No transaction data found. Please ensure you are uploading standard digital PDF statements.")
+        st.warning("Data found, but none matched transaction patterns. Please ensure this is a standard SpareBank 1 export.")
 else:
-    st.info("👋 Welcome! Upload your bank statements in the sidebar to populate your info hub.")
+    st.info("👋 Upload your first statement to build your info hub.")
