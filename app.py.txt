@@ -1,0 +1,110 @@
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import datetime
+
+# --- APP CONFIG ---
+st.set_page_config(page_title="Economy Insight Pro", layout="wide")
+
+# --- CUSTOM STYLING ---
+st.markdown("""
+    <style>
+    .main { background-color: #f5f7f9; }
+    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    </style>
+    """, unsafe_index=True)
+
+st.title("🏦 Personal Economy Breakdown")
+st.markdown("Analyze your spending habits and build a better financial future.")
+
+# --- SIDEBAR: BUDGET & UPLOAD ---
+with st.sidebar:
+    st.header("⚙️ Settings")
+    uploaded_files = st.file_uploader("Upload Bank Statements (PDF/CSV)", accept_multiple_files=True)
+    
+    st.header("🎯 Monthly Budgets")
+    b_food = st.slider("Groceries & Food", 0, 10000, 4000)
+    b_subs = st.slider("Subscriptions", 0, 3000, 1000)
+    b_travel = st.slider("Travel", 0, 10000, 2000)
+    b_shopping = st.slider("Shopping", 0, 10000, 3000)
+
+budget_map = {
+    "Food & Groceries": b_food,
+    "Subscriptions": b_subs,
+    "Travel": b_travel,
+    "Shopping": b_shopping
+}
+
+# --- LOGIC: CATEGORIZATION ---
+def get_category(desc):
+    d = str(desc).lower()
+    if any(k in d for k in ['apple.com', 'adobe', 'openai', 'microsoft', 'netflix', 'spotify']): return 'Subscriptions'
+    if any(k in d for k in ['legesenter', 'apotek', 'helse']): return 'Health'
+    if 'småsparing' in d: return 'Savings'
+    if any(k in d for k in ['atb', 'vy', 'fly', 'taxi', 'uber']): return 'Travel'
+    if any(k in d for k in ['kiwi', 'rema', 'coop', 'meny', 'mcdonalds']): return 'Food & Groceries'
+    if any(k in d for k in ['vipps', 'overføring']): return 'Transfers'
+    if any(k in d for k in ['lønn', 'salary']): return 'Income'
+    return 'Shopping/Other'
+
+# --- MAIN APP LOGIC ---
+if uploaded_files:
+    # Processing the SpareBank 1 format data 
+    all_rows = []
+    for file in uploaded_files:
+        try:
+            # Note: For real PDFs, a library like 'pdfplumber' would be used here. 
+            # This logic mimics the data structure found in your statement.
+            df_temp = pd.read_csv(file, sep=None, engine='python')
+            all_rows.append(df_temp)
+        except:
+            st.error(f"Could not read {file.name}. Ensure it is a valid bank export.")
+
+    if all_rows:
+        df = pd.concat(all_rows).drop_duplicates()
+        
+        # Clean currency for Norwegian formatting 
+        df['Clean_Amount'] = df['Ut av konto'].fillna(0).astype(str).str.replace('.', '').str.replace(',', '.').astype(float)
+        df['Category'] = df['Forklaring'].apply(get_category)
+        
+        # Dashboard Metrics
+        total_spent = df[df['Category'] != 'Income']['Clean_Amount'].sum()
+        total_income = df[df['Category'] == 'Income']['Inn på konto'].fillna(0).astype(str).str.replace('.', '').str.replace(',', '.').astype(float).sum()
+        
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Total Spending", f"{total_spent:,.2f} NOK")
+        m2.metric("Total Income", f"{total_income:,.2f} NOK")
+        m3.metric("Savings Rate", f"{((total_income - total_spent)/total_income)*100:.1f}%" if total_income > 0 else "0%")
+
+        # Budget Progress Bars
+        st.subheader("📊 Budget vs. Actual")
+        spending_summary = df.groupby('Category')['Clean_Amount'].sum()
+        
+        cols = st.columns(len(budget_map))
+        for i, (cat, limit) in enumerate(budget_map.items()):
+            spent = spending_summary.get(cat, 0)
+            percent = min(spent/limit, 1.0) if limit > 0 else 0
+            with cols[i]:
+                st.write(f"**{cat}**")
+                st.progress(percent)
+                st.write(f"{spent:,.0f} / {limit:,.0f} NOK")
+                if spent > limit:
+                    st.warning("Limit Exceeded!")
+
+        # Charts
+        st.divider()
+        c1, c2 = st.columns(2)
+        with c1:
+            fig_pie = px.pie(df[df['Category'] != 'Income'], values='Clean_Amount', names='Category', title="Where is your money going?")
+            st.plotly_chart(fig_pie)
+        with c2:
+            # Grouping by day to show spending habits over the month [cite: 7, 14]
+            daily_spend = df[df['Category'] != 'Income'].copy()
+            fig_trend = px.line(daily_spend, x='Bokført', y='Clean_Amount', title="Daily Spending Spikes")
+            st.plotly_chart(fig_trend)
+
+        st.subheader("📝 Transaction Detail")
+        st.dataframe(df[['Bokført', 'Forklaring', 'Category', 'Clean_Amount']], use_container_width=True)
+
+else:
+    st.info("👋 Welcome! Please upload your bank statements in the sidebar to begin your breakdown.")
