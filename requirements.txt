@@ -1,6 +1,6 @@
 streamlit
 pandas
 plotly
-
-matplotlib
 pypdf
+pdf2image
+pytesseract
