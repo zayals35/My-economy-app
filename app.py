@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import datetime
+from pypdf import PdfReader
+import re
 
 # --- APP CONFIG ---
 st.set_page_config(page_title="Economy Insight Pro", layout="wide")
@@ -17,16 +18,16 @@ st.markdown("""
 st.title("🏦 Personal Economy Breakdown")
 st.markdown("Analyze your spending habits and build a better financial future.")
 
-# --- SIDEBAR: BUDGET & UPLOAD ---
+# --- SIDEBAR: BUDGETS ---
 with st.sidebar:
     st.header("⚙️ Settings")
     uploaded_files = st.file_uploader("Upload Bank Statements (PDF/CSV)", accept_multiple_files=True)
     
     st.header("🎯 Monthly Budgets")
-    b_food = st.slider("Groceries & Food", 0, 10000, 4000)
-    b_subs = st.slider("Subscriptions", 0, 3000, 1000)
-    b_travel = st.slider("Travel", 0, 10000, 2000)
-    b_shopping = st.slider("Shopping", 0, 10000, 3000)
+    b_food = st.sidebar.slider("Groceries & Food", 0, 10000, 4000)
+    b_subs = st.sidebar.slider("Subscriptions", 0, 3000, 1000)
+    b_travel = st.sidebar.slider("Travel", 0, 10000, 2000)
+    b_shopping = st.sidebar.slider("Shopping", 0, 10000, 3000)
 
 budget_map = {
     "Food & Groceries": b_food,
@@ -35,7 +36,7 @@ budget_map = {
     "Shopping": b_shopping
 }
 
-# --- LOGIC: CATEGORIZATION ---
+# --- CATEGORIZATION LOGIC ---
 def get_category(desc):
     d = str(desc).lower()
     if any(k in d for k in ['apple.com', 'adobe', 'openai', 'microsoft', 'netflix', 'spotify']): return 'Subscriptions'
@@ -47,65 +48,70 @@ def get_category(desc):
     if any(k in d for k in ['lønn', 'salary']): return 'Income'
     return 'Shopping/Other'
 
+# --- PDF PARSING ENGINE ---
+def parse_bank_pdf(file):
+    reader = PdfReader(file)
+    extracted_data = []
+    
+    for page in reader.pages:
+        text = page.extract_text()
+        # Regex to find SpareBank 1 transaction patterns (Date Description Amount)
+        # Looking for patterns like: "*5887 28.11 Nok 349.00 Apple.Com/Bill"
+        lines = text.split('\n')
+        for line in lines:
+            # Simple check for Norwegian currency formatting in lines
+            if "nok" in line.lower() or "småsparing" in line.lower():
+                # Extract amount (looking for numbers with commas or dots)
+                amounts = re.findall(r'\d+[.,]\d+', line)
+                if amounts:
+                    extracted_data.append({
+                        "Dato": "Desember", # Simplified for now
+                        "Forklaring": line.strip(),
+                        "Amount": float(amounts[-1].replace('.', '').replace(',', '.'))
+                    })
+    return pd.DataFrame(extracted_data)
+
 # --- MAIN APP LOGIC ---
 if uploaded_files:
-    # Processing the SpareBank 1 format data 
-    all_rows = []
+    all_data = []
     for file in uploaded_files:
-        try:
-            # Note: For real PDFs, a library like 'pdfplumber' would be used here. 
-            # This logic mimics the data structure found in your statement.
-            df_temp = pd.read_csv(file, sep=None, engine='python')
-            all_rows.append(df_temp)
-        except:
-            st.error(f"Could not read {file.name}. Ensure it is a valid bank export.")
+        if file.name.endswith('.pdf'):
+            df_pdf = parse_bank_pdf(file)
+            all_data.append(df_pdf)
+        else:
+            df_csv = pd.read_csv(file, sep=None, engine='python')
+            # Standardize CSV headers
+            df_csv = df_csv.rename(columns={'Ut av konto': 'Amount', 'Forklaring': 'Forklaring'})
+            all_data.append(df_csv)
 
-    if all_rows:
-        df = pd.concat(all_rows).drop_duplicates()
-        
-        # Clean currency for Norwegian formatting 
-        df['Clean_Amount'] = df['Ut av konto'].fillna(0).astype(str).str.replace('.', '').str.replace(',', '.').astype(float)
+    if all_data:
+        df = pd.concat(all_data).drop_duplicates()
         df['Category'] = df['Forklaring'].apply(get_category)
         
-        # Dashboard Metrics
-        total_spent = df[df['Category'] != 'Income']['Clean_Amount'].sum()
-        total_income = df[df['Category'] == 'Income']['Inn på konto'].fillna(0).astype(str).str.replace('.', '').str.replace(',', '.').astype(float).sum()
+        # Calculate Metrics
+        total_spent = df[df['Category'] != 'Income']['Amount'].sum()
         
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Total Spending", f"{total_spent:,.2f} NOK")
-        m2.metric("Total Income", f"{total_income:,.2f} NOK")
-        m3.metric("Savings Rate", f"{((total_income - total_spent)/total_income)*100:.1f}%" if total_income > 0 else "0%")
+        m1, m2 = st.columns(2)
+        m1.metric("Total Spending Detected", f"{total_spent:,.2f} NOK")
+        m2.metric("Savings Detected", f"{df[df['Category'] == 'Savings']['Amount'].sum():,.2f} NOK")
 
-        # Budget Progress Bars
-        st.subheader("📊 Budget vs. Actual")
-        spending_summary = df.groupby('Category')['Clean_Amount'].sum()
+        # Budget Progress
+        st.subheader("📊 Budget Tracking")
+        summary = df.groupby('Category')['Amount'].sum()
         
-        cols = st.columns(len(budget_map))
-        for i, (cat, limit) in enumerate(budget_map.items()):
-            spent = spending_summary.get(cat, 0)
+        for cat, limit in budget_map.items():
+            spent = summary.get(cat, 0)
             percent = min(spent/limit, 1.0) if limit > 0 else 0
-            with cols[i]:
-                st.write(f"**{cat}**")
-                st.progress(percent)
-                st.write(f"{spent:,.0f} / {limit:,.0f} NOK")
-                if spent > limit:
-                    st.warning("Limit Exceeded!")
+            st.write(f"**{cat}** ({spent:,.0f} / {limit:,.0f} NOK)")
+            st.progress(percent)
 
         # Charts
         st.divider()
-        c1, c2 = st.columns(2)
-        with c1:
-            fig_pie = px.pie(df[df['Category'] != 'Income'], values='Clean_Amount', names='Category', title="Where is your money going?")
-            st.plotly_chart(fig_pie)
-        with c2:
-            # Grouping by day to show spending habits over the month [cite: 7, 14]
-            daily_spend = df[df['Category'] != 'Income'].copy()
-            fig_trend = px.line(daily_spend, x='Bokført', y='Clean_Amount', title="Daily Spending Spikes")
-            st.plotly_chart(fig_trend)
+        fig_pie = px.pie(df[df['Category'] != 'Income'], values='Amount', names='Category', hole=0.4)
+        st.plotly_chart(fig_pie, use_container_width=True)
 
-        st.subheader("📝 Transaction Detail")
-        st.dataframe(df[['Bokført', 'Forklaring', 'Category', 'Clean_Amount']], use_container_width=True)
+        st.subheader("📝 Transaction List")
+        st.dataframe(df[['Forklaring', 'Category', 'Amount']], use_container_width=True)
 
 else:
-    st.info("👋 Welcome! Please upload your bank statements in the sidebar to begin your breakdown.")
-
+    st.info("👋 Upload your SpareBank 1 PDF to see your economy breakdown!")
