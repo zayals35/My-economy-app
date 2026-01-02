@@ -1,133 +1,114 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 from pypdf import PdfReader
 import re
 
-# --- APP CONFIG ---
-st.set_page_config(page_title="Pro Finance Insight", layout="wide", page_icon="💰")
+# --- APP CONFIG & THEME ---
+st.set_page_config(page_title="Pro Habit Tracker", layout="wide", page_icon="💎")
 
-# --- PROFESSIONAL STYLING ---
+# CSS for a professional Dark Mode look
 st.markdown("""
     <style>
-    .stApp { background-color: #0e1117; color: #ffffff; }
-    [data-testid="stMetricValue"] { font-size: 28px; color: #00d4ff; }
-    .main-card { background-color: #161b22; padding: 20px; border-radius: 15px; border: 1px solid #30363d; }
+    .stApp { background-color: #0b0e14; color: #e1e4e8; }
+    .metric-card { background-color: #1c2128; border: 1px solid #444c56; border-radius: 10px; padding: 20px; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- ENHANCED CATEGORY ENGINE ---
+# --- CATEGORY BRAIN ---
 def get_category(desc):
     d = str(desc).lower()
     mapping = {
-        'Subscriptions': ['apple.com', 'adobe', 'openai', 'microsoft', 'netflix', 'spotify', 'chatgpt', 'muslimi.com', 'google'],
-        'Health': ['legesenter', 'apotek', 'helse', 'vitus', 'lege'],
+        'Subscriptions': ['apple.com', 'adobe', 'openai', 'chatgpt', 'microsoft', 'spotify', 'muslimi.com'],
+        'Health': ['legesenter', 'apotek', 'helse', 'vitus'],
         'Savings': ['småsparing'],
-        'Travel': ['atb', 'vy', 'fly', 'taxi', 'uber', 'ruten', 'feriereiser'],
-        'Food & Groceries': ['kiwi', 'rema', 'coop', 'meny', 'mcdonalds', 'food', 'restaurant'],
-        'Charity/Donations': ['yousuf', 'launchgood', 'dawah', 'relief', 'charity', 'openai'],
+        'Travel': ['atb', 'vy', 'fly', 'taxi', 'uber', 'feriereiser'],
+        'Food & Groceries': ['kiwi', 'rema', 'coop', 'meny', 'mcdonalds', 'food'],
+        'Charity/Support': ['yousuf', 'launchgood', 'dawah', 'relief'],
         'Transfers/Vipps': ['vipps', 'overføring', 'til:', 'betalt:'],
         'Income': ['lønn', 'salary', 'fra:']
     }
     for cat, keywords in mapping.items():
         if any(k in d for k in keywords): return cat
-    return 'Shopping/Other'
+    return 'Other/Shopping'
 
-# --- SPAREBANK 1 PDF PARSER ---
-def parse_sparebank_pdf(file):
+# --- SPAREBANK 1 PDF ENGINE ---
+def parse_pdf(file):
     reader = PdfReader(file)
     data = []
-    
     for page in reader.pages:
         lines = page.extract_text().split('\n')
         for line in lines:
-            # Skip noise like account headers and IBANs [cite: 13, 14]
-            if any(x in line for x in ["4212.02.65827", "IBAN", "Saldo", "Dato", "Referanse"]): continue
-            
-            # Find amounts (digits with comma or dot) 
+            if any(x in line for x in ["4212.02.65827", "IBAN", "Saldo"]): continue
+            # Find Norwegian currency pattern: 1.234,56
             amounts = re.findall(r'(\d+[\d\s.]*,\d{2})', line)
             if amounts:
-                # 'Ut av konto' logic: ignore the huge account numbers and balances 
                 amt_str = amounts[0].replace(' ', '').replace('.', '').replace(',', '.')
                 try:
                     amt = float(amt_str)
-                    # Filter out system IDs or large balances that aren't expenses 
-                    if amt > 25000: continue 
-                    
-                    # Extract description by removing the amount from the line 
+                    if amt > 25000: continue # Skip large balance totals
                     desc = re.sub(r'\d+[\d\s.]*,\d{2}.*', '', line).strip()
-                    
                     if desc:
                         data.append({"Description": desc, "Amount": amt, "Category": get_category(desc)})
-                except ValueError:
-                    continue
+                except: continue
+    return pd.DataFrame(data)
+
+# --- MAIN DASHBOARD ---
+st.title("💎 Personal Economy Pro")
+st.sidebar.header("🎯 Set Your Goals")
+goal_food = st.sidebar.slider("Food Budget (NOK)", 0, 10000, 4000)
+goal_subs = st.sidebar.slider("Subs Budget (NOK)", 0, 5000, 1500)
+
+uploaded_files = st.sidebar.file_uploader("Upload Statements", type=['pdf'], accept_multiple_files=True)
+
+if uploaded_files:
+    df = pd.concat([parse_pdf(f) for f in uploaded_files]).drop_duplicates()
     
-    return pd.DataFrame(data) if data else pd.DataFrame(columns=["Description", "Amount", "Category"])
-
-# --- SIDEBAR & UPLOAD ---
-st.title("💰 Universal Economy Breakdown")
-st.sidebar.header("User Settings")
-files = st.sidebar.file_uploader("Upload Bank Statements (PDF)", accept_multiple_files=True, type=['pdf'])
-
-# Expanded Budgeting Feature
-st.sidebar.subheader("Monthly Targets")
-goal_food = st.sidebar.number_input("Food Goal (NOK)", value=4000)
-goal_subs = st.sidebar.number_input("Subs Goal (NOK)", value=1000)
-goal_charity = st.sidebar.number_input("Charity Goal (NOK)", value=500)
-goal_travel = st.sidebar.number_input("Travel Goal (NOK)", value=2000)
-
-if files:
-    all_dfs = []
-    for f in files:
-        parsed_df = parse_sparebank_pdf(f)
-        if not parsed_df.empty:
-            all_dfs.append(parsed_df)
+    # 1. Top Metrics with Health Score
+    spending_df = df[~df['Category'].isin(['Income', 'Savings'])]
+    total_spent = spending_df['Amount'].sum()
+    total_saved = df[df['Category'] == 'Savings']['Amount'].sum()
     
-    if all_dfs:
-        df = pd.concat(all_dfs).drop_duplicates()
-        
-        # --- METRICS ---
-        spending_only = df[~df['Category'].isin(['Income', 'Savings'])]
-        savings_only = df[df['Category'] == 'Savings']
-        income_only = df[df['Category'] == 'Income']
-        
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Actual Spending", f"{spending_only['Amount'].sum():,.2f} NOK")
-        m2.metric("Total Savings", f"{savings_only['Amount'].sum():,.2f} NOK")
-        m3.metric("Charity Given", f"{df[df['Category'] == 'Charity/Donations']['Amount'].sum():,.2f} NOK")
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Total Monthly Spending", f"{total_spent:,.2f} NOK")
+    m2.metric("Micro-Savings (Habit)", f"{total_saved:,.2f} NOK", delta="Great pace!", delta_color="normal")
+    
+    # Calculate Burn Rate Gauge
+    sub_spent = df[df['Category'] == 'Subscriptions']['Amount'].sum()
+    fig_gauge = go.Figure(go.Indicator(
+        mode = "gauge+number",
+        value = sub_spent,
+        title = {'text': "Subscription Burn Rate"},
+        gauge = {'axis': {'range': [0, 3000]}, 'bar': {'color': "#00d4ff"}}
+    ))
+    fig_gauge.update_layout(height=250, margin=dict(l=20, r=20, t=50, b=20), paper_bgcolor="rgba(0,0,0,0)")
+    m3.plotly_chart(fig_gauge, use_container_width=True)
 
-        # --- VISUALS ---
-        st.divider()
-        col_left, col_right = st.columns([1, 1])
+    # 2. Sunburst Animated Breakdown
+    st.divider()
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("Interactive Sunburst")
+        fig_sun = px.sunburst(spending_df, path=['Category', 'Description'], values='Amount',
+                             color='Category', color_discrete_sequence=px.colors.qualitative.Prism)
+        st.plotly_chart(fig_sun, use_container_width=True)
+        st.caption("Click a category to zoom in on specific habits.")
+
+    with c2:
+        st.subheader("Budget Habits")
+        food_spent = df[df['Category'] == 'Food & Groceries']['Amount'].sum()
+        st.write(f"Food Progress: {food_spent:,.0f} / {goal_food:,.0f} NOK")
+        st.progress(min(food_spent/goal_food, 1.0))
         
-        with col_left:
-            st.subheader("Spending Distribution")
-            if not spending_only.empty:
-                fig_pie = px.pie(spending_only, values='Amount', names='Category', hole=0.5,
-                                 color_discrete_sequence=px.colors.qualitative.Pastel)
-                st.plotly_chart(fig_pie, use_container_width=True)
-            else:
-                st.write("No spending detected to display.")
+        if food_spent > goal_food:
+            st.warning("🚨 Habit Alert: Your food spending is above your target!")
+        else:
+            st.success("✅ Habit Check: You are managing your food budget well.")
+            st.balloons() # Celeberatory balloons for good habits
 
-        with col_right:
-            st.subheader("Goal Performance")
-            cat_sums = df.groupby('Category')['Amount'].sum()
-            
-            targets = [
-                ("Food & Groceries", goal_food), 
-                ("Subscriptions", goal_subs), 
-                ("Charity/Donations", goal_charity),
-                ("Travel", goal_travel)
-            ]
-            for cat_name, goal_val in targets:
-                spent = cat_sums.get(cat_name, 0)
-                percent = min(spent/goal_val, 1.0) if goal_val > 0 else 0
-                st.write(f"**{cat_name}**: {spent:,.0f} / {goal_val:,.0f} NOK")
-                st.progress(percent)
+    st.subheader("📝 Transaction Explorer")
+    st.dataframe(df.sort_values(by="Amount", ascending=False), use_container_width=True)
 
-        st.subheader("Detailed Breakdown")
-        st.dataframe(df.sort_values(by="Amount", ascending=False), use_container_width=True)
-    else:
-        st.warning("Could not extract any transaction data. Please ensure the PDF is a standard bank statement.")
 else:
-    st.info("Upload your PDF statement to see the breakdown of your Savings, Charity, and Subscriptions.")
+    st.info("Upload your PDF to unlock your animated financial story.")
