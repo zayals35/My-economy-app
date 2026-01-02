@@ -12,7 +12,7 @@ st.markdown("""
     .main { background-color: #f5f7f9; }
     .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
     </style>
-    """, unsafe_index=True)
+    """, unsafe_allow_html=True)
 
 st.title("🏦 Personal Economy Breakdown")
 st.markdown("Analyze your spending habits and build a better financial future.")
@@ -108,3 +108,4 @@ if uploaded_files:
 
 else:
     st.info("👋 Welcome! Please upload your bank statements in the sidebar to begin your breakdown.")
+
