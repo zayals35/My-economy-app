@@ -1,39 +1,40 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 from pypdf import PdfReader
 import re
+from datetime import datetime
 
 # --- APP CONFIG ---
-st.set_page_config(page_title="SpareBank Pro Tracker", layout="wide", page_icon="🏦")
+st.set_page_config(page_title="Economy Info Hub", layout="wide", page_icon="📊")
 
-# Professional Dark Styling
+# Custom CSS for a clean, professional "Hub" look
 st.markdown("""
     <style>
-    .stApp { background-color: #0e1117; color: #ffffff; }
-    [data-testid="stMetricValue"] { font-size: 28px; color: #00d4ff; }
+    .stApp { background-color: #f8f9fa; color: #1e1e1e; }
+    .metric-container { background-color: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
     </style>
     """, unsafe_allow_html=True)
 
-# --- ADVANCED CATEGORY ENGINE ---
+# --- SMART CATEGORIZATION ---
 def get_category(desc):
     d = str(desc).lower()
+    # Patterns directly from your SpareBank statement
     mapping = {
         'Subscriptions': ['apple.com', 'adobe', 'openai', 'chatgpt', 'microsoft', 'spotify', 'muslimi.com'],
         'Health': ['legesenter', 'apotek', 'vitus', 'fokus', 'lege'],
         'Savings': ['småsparing'],
         'Travel': ['atb', 'vy', 'fly', 'taxi', 'uber', 'ruten', 'feriereiser'],
-        'Food & Groceries': ['kiwi', 'rema', 'coop', 'meny', 'mcdonalds', 'food'],
-        'Charity/Support': ['yousuf', 'launchgood', 'dawah', 'relief'],
+        'Food & Groceries': ['kiwi', 'rema', 'coop', 'meny', 'mcdonalds', 'food', 'restaurant'],
+        'Charity/Donations': ['yousuf', 'launchgood', 'dawah', 'relief'],
         'Income': ['lønn', 'salary', 'fra:'],
         'Vipps/Transfers': ['vipps', 'overføring', 'til:']
     }
     for cat, keywords in mapping.items():
         if any(k in d for k in keywords): return cat
-    return 'Other/Shopping'
+    return 'General Shopping'
 
-# --- THE "MASTER" SPAREBANK PDF PARSER ---
+# --- SPAREBANK 1 PDF PARSER ---
 def parse_pdf(file):
     reader = PdfReader(file)
     data = []
@@ -43,94 +44,103 @@ def parse_pdf(file):
         lines = text.split('\n')
         
         for line in lines:
-            # Skip headers and balance info
+            # Skip noise like IBAN, account headers, or empty lines
             if any(x in line for x in ["4212.02.65827", "IBAN", "Saldo", "Referanse", "Side"]): continue
             
-            # SpareBank 1 Pattern: Date Description Amount
-            # We look for amounts formatted like 349,00 or 1.529,00
-            # This regex captures the description and the currency amount separately
+            # Pattern: Description followed by Norwegian amount format (e.g., 349,00)
             match = re.search(r'(.*?)\s+(\d+[\d\s.]*,\d{2})', line)
+            
+            # Pattern: Also look for dates in DDMM format (e.g. 0112)
+            date_match = re.search(r'(\d{4})', line)
             
             if match:
                 desc_raw = match.group(1).strip()
                 amt_raw = match.group(2).replace(' ', '').replace('.', '').replace(',', '.')
+                date_str = date_match.group(1) if date_match else "0101" # Default to Jan 1st if missing
                 
                 try:
                     amt = float(amt_raw)
-                    # Filter out dates misread as amounts and account totals
-                    if 5.0 <= amt < 25000.0:
-                        # Clean up prefix noise (like dates 0112 at the start of desc)
-                        clean_desc = re.sub(r'^\d{4}\s+', '', desc_raw)
+                    # Filter out system IDs and balance totals (usually > 20k or < 1)
+                    if 1.0 <= amt < 20000.0:
+                        # Attempt to format date into a readable Month
+                        month_int = int(date_str[2:4])
+                        month_name = datetime(2025, month_int, 1).strftime('%B')
                         
                         data.append({
-                            "Description": clean_desc,
+                            "Month": month_name,
+                            "Date_Code": date_str,
+                            "Description": re.sub(r'^\d{4}\s+', '', desc_raw), # Clean date prefix
                             "Amount": amt,
-                            "Category": get_category(clean_desc)
+                            "Category": get_category(desc_raw)
                         })
                 except: continue
-    
     return pd.DataFrame(data)
 
-# --- DASHBOARD UI ---
-st.title("🏦 SpareBank 1 Pro Habit Tracker")
+# --- MAIN UI ---
+st.title("📂 Economy Information Hub")
+st.markdown("Upload multiple monthly statements to build your financial archive.")
 
+# 1. BROWSE & SUBMIT (Sidebar)
 with st.sidebar:
-    st.header("⚙️ Settings")
-    uploaded_files = st.file_uploader("Upload SpareBank PDFs", type=['pdf'], accept_multiple_files=True)
-    st.divider()
-    g_food = st.slider("Food Goal (NOK)", 0, 10000, 4000)
-    g_subs = st.slider("Subscription Goal (NOK)", 0, 3000, 1000)
-    g_charity = st.slider("Charity Goal (NOK)", 0, 2000, 500)
+    st.header("📤 Document Upload")
+    uploaded_files = st.file_uploader("Upload SpareBank 1 PDFs", type=['pdf'], accept_multiple_files=True)
+    st.info("Upload files for different months (e.g., Nov, Dec) to see the full timeline.")
 
 if uploaded_files:
-    all_df = []
+    # Build Master Data
+    all_data = []
     for f in uploaded_files:
-        res = parse_pdf(f)
-        if not res.empty:
-            all_df.append(res)
+        df_temp = parse_pdf(f)
+        if not df_temp.empty:
+            all_data.append(df_temp)
     
-    if all_df:
-        df = pd.concat(all_df).drop_duplicates()
+    if all_data:
+        master_df = pd.concat(all_data).drop_duplicates()
         
-        # Filtering logic
-        spending = df[~df['Category'].isin(['Income', 'Savings'])]
-        savings_total = df[df['Category'] == 'Savings']['Amount'].sum()
+        # 2. MONTHLY CALENDAR SELECTOR
+        available_months = master_df['Month'].unique()
+        selected_month = st.selectbox("📅 Select Month to View", options=available_months)
         
-        # 1. Top Metrics with Gauge Animation
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Total Monthly Spending", f"{spending['Amount'].sum():,.2f} NOK")
-        c2.metric("Micro-Savings (Habit)", f"{savings_total:,.2f} NOK")
-        
-        # Gauge for Subscriptions
-        sub_spent = df[df['Category'] == 'Subscriptions']['Amount'].sum()
-        fig_gauge = go.Figure(go.Indicator(
-            mode = "gauge+number",
-            value = sub_spent,
-            title = {'text': "Subs Burn Rate"},
-            gauge = {'axis': {'range': [0, 2000]}, 'bar': {'color': "#00d4ff"}}
-        ))
-        fig_gauge.update_layout(height=250, margin=dict(l=20,r=20,t=40,b=20), paper_bgcolor="rgba(0,0,0,0)")
-        c3.plotly_chart(fig_gauge, use_container_width=True)
+        # Filter data based on selected month
+        month_df = master_df[master_df['Month'] == selected_month]
+        spending_df = month_df[~month_df['Category'].isin(['Income', 'Savings'])]
 
-        # 2. Animated Sunburst Chart
+        # 3. DATA TO GRAPHICS
         st.divider()
-        col_left, col_right = st.columns(2)
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total Spent", f"{spending_df['Amount'].sum():,.2f} NOK")
+        col2.metric("Total Saved", f"{month_df[month_df['Category'] == 'Savings']['Amount'].sum():,.2f} NOK")
+        col3.metric("Charity Given", f"{month_df[month_df['Category'] == 'Charity/Donations']['Amount'].sum():,.2f} NOK")
+
+        c_left, c_right = st.columns(2)
         
-        with col_left:
-            st.subheader("Interactive Spending Story")
-            fig_sun = px.sunburst(spending, path=['Category', 'Description'], values='Amount',
-                                 color='Category', template="plotly_dark", height=500)
-            st.plotly_chart(fig_sun, use_container_width=True)
-            st.caption("Click a category to zoom in on specific vendors.")
+        with c_left:
+            st.subheader(f"Spending Breakdown: {selected_month}")
+            fig_pie = px.pie(spending_df, values='Amount', names='Category', hole=0.4,
+                             color_discrete_sequence=px.colors.qualitative.Safe)
+            st.plotly_chart(fig_pie, use_container_width=True)
 
-        with col_right:
-            st.subheader("Budget Scorecard")
-            cat_totals = df.groupby('Category')['Amount'].sum()
-            goals = [("Food & Groceries", g_food), ("Subscriptions", g_subs), ("Charity/Support", goal_charity if 'goal_charity' in locals() else g_charity)]
+        with c_right:
+            st.subheader("Daily Spending Trend")
+            daily_trend = spending_df.groupby('Date_Code')['Amount'].sum().reset_index()
+            fig_bar = px.bar(daily_trend, x='Date_Code', y='Amount', 
+                             labels={'Date_Code': 'Day (DDMM)', 'Amount': 'NOK'},
+                             color_discrete_sequence=['#00d4ff'])
+            st.plotly_chart(fig_bar, use_container_width=True)
+
+        # 4. SEARCHABLE INFO HUB
+        st.subheader("📝 Transaction Details")
+        search_query = st.text_input("Search description (e.g., 'Apple', 'Vipps', 'Ticket')...")
+        
+        if search_query:
+            display_df = month_df[month_df['Description'].str.contains(search_query, case=False)]
+        else:
+            display_df = month_df
             
-            for name, goal in goals:
-                spent = cat_totals.get(name, 0)
-                st.write(f"**{name}**: {spent:,.0f} / {goal:,.0f} NOK")
-                st.progress(min(spent/goal, 1.0) if goal > 0 else 0)
+        st.dataframe(display_df[['Date_Code', 'Description', 'Amount', 'Category']].sort_values('Date_Code'), 
+                     use_container_width=True)
 
-        st.subheader("📝 Full Transaction List")
+    else:
+        st.error("No transaction data found. Please ensure you are uploading standard digital PDF statements.")
+else:
+    st.info("👋 Welcome! Upload your bank statements in the sidebar to populate your info hub.")
